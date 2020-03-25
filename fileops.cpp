@@ -57,7 +57,7 @@ struct Meta get_meta(const char* filepath) {
   	while(p) {
   		//std::cout << *p << std::endl;
   		temp.push_back(atoi(p));
-  		p = strtok(NULL, " ");
+  		p = strtok(NULL, ", ");
   		i++;
 	}
 	//for(auto iter : temp)std::cout << iter << std::endl;

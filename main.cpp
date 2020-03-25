@@ -18,10 +18,10 @@
 #include <math.h>
 #include "fileops.cpp"
 
-#define NO_MESSAGE  0
-#define EXPLORING 1
-#define RETURNING_SUCCESS 2
-#define I_AM_LEADER 3
+#define REPLY  0
+#define DIST 1
+#define ACK 1
+#define NACK 0
 
 #define MAX_DIST 10000
 
@@ -31,9 +31,10 @@ int msgCount = 0;
 struct Message {
   unsigned int msg; // 0->nack 1->ack when type is 0; distance from the root when type is 1
   unsigned int type; // 0->nack/ack; 1->distance
-  unsigned int sender; 
+  unsigned int sender; // process id that sends this messgae
 };
 
+// To record the pipes of the links and whether receive ack/nack
 struct Link {
 	int read;
 	int write;
@@ -41,6 +42,7 @@ struct Link {
 	int reply;
 };
 
+// For a certain link, put all the messages in a queue with their delay
 struct QueuedMsg {
 	struct Message msg;
 	int delay;
@@ -52,16 +54,18 @@ struct Output {
 	std::vector<QueuedMsg> que;
 };
 
-
-
+// Create two pipes and two output queues between two nodes
 void createLinkBetween(int node1, int node2, std::vector<struct Link>** links, std::vector<Output>** output) {
+
+	// Create two pipes
 	int pipe12[2];
 	int pipe21[2];
-	pipe(pipe12);
-	pipe(pipe21);
-
+	if(pipe(pipe12) || pipe(pipe21)) {
+		throw -1;
+	}
+	
 	struct Link node1_link;
-	fcntl(pipe21[0], F_SETFL, O_NONBLOCK); 
+	fcntl(pipe21[0], F_SETFL, O_NONBLOCK); // set non-block state
 	node1_link.read = pipe21[0];
 	node1_link.write = pipe12[1];
 	node1_link.target = node2;
@@ -71,7 +75,7 @@ void createLinkBetween(int node1, int node2, std::vector<struct Link>** links, s
 	node1_output.target = node2;
 	
 	struct Link node2_link;
-	fcntl(pipe12[0], F_SETFL, O_NONBLOCK); 
+	fcntl(pipe12[0], F_SETFL, O_NONBLOCK); // set non-block state
 	node2_link.read = pipe12[0];
 	node2_link.write = pipe21[1];
 	node2_link.target = node1;
@@ -90,16 +94,17 @@ void createLinkBetween(int node1, int node2, std::vector<struct Link>** links, s
 	printf("create link between %d and %d\n", node1, node2);
 }
 
+// Broadcast to all the neighbors except the parent
 void broadcast(int except, int sender, std::vector<Output>* output, struct Message msg) {
 	for(auto &it : *output) {
-		if(except != -1) {
-			if(it.target == except) {
-				continue;
-			}
+		if(it.target == except) {
+			continue;
 		}
+		
 		struct QueuedMsg queuedMsg;
 		queuedMsg.msg = msg;
-		queuedMsg.delay = ceil(((float)rand()/RAND_MAX) * 15);
+		queuedMsg.delay = ceil(((float)rand()/RAND_MAX) * 15); // set random delay time from 1 to 15
+		// If it is not the only message, the delay time should be added with the previous one to keep FIFO
 		if(!it.que.empty()) {
 			queuedMsg.delay += it.que.end()->delay;
 		}
@@ -109,6 +114,7 @@ void broadcast(int except, int sender, std::vector<Output>* output, struct Messa
 	}
 }
 
+// Check message queue for each neighbor
 bool checkMsgQueue(int node, std::vector<Output>* output) {
 	static int f = 0;
 	bool flag = true;
@@ -117,10 +123,12 @@ bool checkMsgQueue(int node, std::vector<Output>* output) {
 			flag = false;
 			for(std::vector<QueuedMsg>::iterator iter = it.que.begin(); iter != it.que.end(); iter++) {
 				iter->delay--;
+				//if(node == 2)printf("node 2: %d - %d - %d\n", it.target, iter->msg.type, iter->delay);
+				// If the delay is 0, then it is time to send the message
 				if(iter->delay == 0) {
 					write(it.pipe, &iter->msg, sizeof(struct Message));
-					//if(iter->msg.type == 1)printf("process %d send msg to %d\n", node, it.target);
-					//else printf("process %d ack/nack to %d\n", node, it.target);
+					//if(iter->msg.type == 1 && (node == 7 || node == 3 || node == 2))printf("process %d send msg to %d\n", node, it.target);
+					//else if(iter->msg.type == 0 && (node == 7 || node == 3 || node == 2))printf("process %d ack/nack to %d\n", node, it.target);
 					it.que.erase(iter);
 					iter--;
 					msgCount++;
@@ -131,6 +139,7 @@ bool checkMsgQueue(int node, std::vector<Output>* output) {
 	return flag;
 }
 
+// Check all the read pipes and see if any message comes in
 bool readMsg(std::vector<struct Link>* links, struct Message* msg) {
 	for(auto &it : *links) {
 		int flag = read(it.read, msg, sizeof(struct Message));
@@ -141,6 +150,7 @@ bool readMsg(std::vector<struct Link>* links, struct Message* msg) {
 	return false;
 } 
 
+// Check if receive the ack/nack for all the broadcast messages
 bool checkReply(int parent, std::vector<struct Link>* links) {
 	for(auto &iter : *links) {
 		if(iter.target == parent) {
@@ -153,6 +163,7 @@ bool checkReply(int parent, std::vector<struct Link>* links) {
 	return true;
 }
 
+// send a message to a single node, usually a ack/nack
 void reply(int target, int node, std::vector<Output>* output, struct Message msg) {
 	for(auto &iter : *output) {
 		if(iter.target == target) {
@@ -175,33 +186,26 @@ void reply(int target, int node, std::vector<Output>* output, struct Message msg
  * Thread entry point, called on thread creation 
  ***********************************************/
 void thread_method(std::vector<struct Link>* neighbors, std::vector<struct Output>* output, bool isRoot, int node) {
-	/*std::string output = "process:\n";
-	for(int i = 0; i < neighbors->size(); i++){
-		output += std::to_string(neighbors->at(i).read);
-		output += " ";
-		output += std::to_string(neighbors->at(i).write);
-		output += "\n";
-	}
-	std::cout << output;*/
-	
 	unsigned int dist;
 	int parent = -1;
 	bool running = true;
-	bool send = true;
+	bool sending = true;
 	struct Message inputMsg; 
 	struct Message outputMsg;
 	
+	// root node
 	if(isRoot) {
-		printf("Root: process %d running\n", node);
+		printf("Root: process %d start\n", node);
 		dist = 0;
-		outputMsg.msg = 0;
-		outputMsg.type = 1; 
+		outputMsg.msg = dist;
+		outputMsg.type = DIST; 
 		outputMsg.sender = node;
-		broadcast(-1, node, output, outputMsg);
+		broadcast(-1, node, output, outputMsg); // broadcast the distance to all the neighbors
 		while(running) {
-			send = checkMsgQueue(node, output);
+			sending = checkMsgQueue(node, output);
 			if(readMsg(neighbors, &inputMsg)) {
-				if(inputMsg.type == 0) {
+				// receive ack
+				if(inputMsg.type == REPLY) {
 					for(auto &iter : *neighbors) {
 						if(iter.target == inputMsg.sender) {
 							iter.reply = 1;
@@ -211,59 +215,69 @@ void thread_method(std::vector<struct Link>* neighbors, std::vector<struct Outpu
 					}
 				}
 			}
+			// if receive ack from all the neighbors, then it is time to terminate
 			if(checkReply(-1, neighbors)) {
 				running = false;
 				printf("Program terminated, the number of average messages is %f\n", msgCount * 1.0 / linkCount);
 			}
 		}
 	} 
+	// non-root node
 	else {
 		dist = MAX_DIST;
-		int flag = 1;
 		while(1) {
 			if(readMsg(neighbors, &inputMsg)) {
-				if(inputMsg.type == 1) {
+				if(inputMsg.type == DIST) {
+					// parent change
 					if(dist > inputMsg.msg + 1) {
-						//printf("process %d receive %d from %d\n", node, inputMsg.msg, inputMsg.sender);
-						dist = inputMsg.msg + 1;
+						//if(node == 7 || node == 3 || node == 2)printf("process %d receive %d from %d\n", node, inputMsg.msg, inputMsg.sender);
+						dist = inputMsg.msg + 1; // reset the distance
+						outputMsg.msg = NACK;
+						outputMsg.sender = node;
+						outputMsg.type = REPLY;
+						reply(parent, node, output, outputMsg); // send nack to previous parent
 						parent = inputMsg.sender;
 						outputMsg.msg = dist;
 						outputMsg.sender = node;
-						outputMsg.type = 1;
-						broadcast(parent, node, output, outputMsg);
+						outputMsg.type = DIST;
+						broadcast(parent, node, output, outputMsg); // broadcast the new distance
+						// reset the reply for the new broadcast
 						for(auto &iter : *neighbors) {
 							iter.reply = 0;
 						}
 					}
+					// invalid message
 					else {
-						//printf("process %d reject %d from %d\n", node, inputMsg.msg, inputMsg.sender);
+						//if(node == 7 || node == 3 || node == 2)printf("process %d reject %d from %d\n", node, inputMsg.msg, inputMsg.sender);
 						struct Message outputMsg;
-						outputMsg.msg = 0;
+						outputMsg.msg = NACK;
 						outputMsg.sender = node;
-						outputMsg.type = 0;
-						reply(inputMsg.sender, node, output, outputMsg);
+						outputMsg.type = REPLY;
+						reply(inputMsg.sender, node, output, outputMsg); // send a nack
 						//printf("process %d nack to %d\n", node, inputMsg.sender);
 					}
 				}
-				else if(inputMsg.type == 0) {
+				// receive an ack/nack
+				else if(inputMsg.type == REPLY) {
 					for(auto &iter : *neighbors) {
 						if(iter.target == inputMsg.sender) {
-							iter.reply = 1;
-							//printf("process %d receive ack/nack from %d\n", node, inputMsg.sender);
+							iter.reply = 1; // record the reply
+							//if(node == 7 || node == 3 || node == 2)printf("process %d receive ack/nack from %d\n", node, inputMsg.sender);
 							break;
 						}
 					}
 				}
 			}
+			// if get ack/nack for all the messages
 			if(checkReply(parent, neighbors) && running) {
-				outputMsg.msg = 1;
+				outputMsg.msg = ACK;
 				outputMsg.sender = node;
-				outputMsg.type = 0;
+				outputMsg.type = REPLY;
 				reply(parent, node, output, outputMsg);
 				printf("%d - %d\n", node, parent);
 				running = false;
 			}
-			send = checkMsgQueue(node, output);
+			sending = checkMsgQueue(node, output);
 		}
 	}
 }
@@ -302,13 +316,21 @@ int main(int argc, char** argv)
 		outputs[i] = new std::vector<struct Output>();
 	}
 	
-	for(int i = 0; i < n; i++) {
-		for(int j = i + 1; j < n; j++) {
-			if(input.matrix[i][j]) {
-				createLinkBetween(i, j, links_ref, outputs_ref);
+	// create pipes
+	try {
+		for(int i = 0; i < n; i++) {
+			for(int j = i + 1; j < n; j++) {
+				if(input.matrix[i][j]) {
+					createLinkBetween(i, j, links_ref, outputs_ref);
+				}
 			}
 		}
 	}
+	catch(int e) {
+		printf("Create pipes failed!");
+		return e;
+	}
+	
 	
 	std::thread* threads[n]; //pointers to every thread process
 	// Create threads, pass in vector of neighbor links
@@ -321,6 +343,5 @@ int main(int argc, char** argv)
 		threads[i]->join();	
 	}
 
-	////
 	return 0; // program finished
 }
