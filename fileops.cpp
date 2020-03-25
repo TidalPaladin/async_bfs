@@ -16,20 +16,22 @@
 struct Meta {
 	int num;
 	int root;
-	int **matrix;
+	std::vector<std::vector<int>> matrix;
 };
  
-struct Meta* get_meta(const char* filepath) {
+struct Meta get_meta(const char* filepath) {
+  struct Meta file_contents;
+  int num, root;	
+	
   // try opening file
   FILE *fp = fopen(filepath, "r");
   if (fp == NULL) {
     fprintf(stderr, "Error opening file '%s'\n", filepath);
     perror("fopen");
-    return NULL;
+    return file_contents;
   }
   
-  Meta* file_contents = new Meta();
-  int num, root;
+  
   
   char *line = NULL;
   size_t len = 0;
@@ -43,26 +45,23 @@ struct Meta* get_meta(const char* filepath) {
   	root = atoi(line);
   }
 
-  // read ints line by line from file into array
+  // init the matrix 
   int pos = 0;
   char *p;
   int **matrix = new int*[num];
-  for(int i = 0; i < num; i++) {
-  	matrix[i] = new int[num];
-  }
-   
   
   while ((read = getline(&line, &len, fp)) != -1) {
-  	int *temp = new int[file_contents->num];
+  	std::vector<int> temp;
   	p = strtok(line, " ");
   	int i = 0;
   	while(p) {
-  		std::cout << *p << std::endl;
-  		matrix[pos][i] = *p;
+  		//std::cout << *p << std::endl;
+  		temp.push_back(atoi(p));
   		p = strtok(NULL, " ");
   		i++;
 	}
-	//matrix.push_back(temp);
+	//for(auto iter : temp)std::cout << iter << std::endl;
+	file_contents.matrix.push_back(temp);
     pos++;
   }
 
@@ -72,9 +71,8 @@ struct Meta* get_meta(const char* filepath) {
       delete line;
   }
   
-  file_contents->num = num;
-  file_contents->root = root;  
-  file_contents->matrix = matrix;
+  file_contents.num = num;
+  file_contents.root = root;  
   return file_contents;
 }
 
