@@ -18,6 +18,11 @@
 #include <math.h>
 #include "fileops.cpp"
 
+#define DEBUG false
+
+#define debug_print(fmt, ...) \
+  do { if (DEBUG) fprintf(stderr, fmt, __VA_ARGS__); } while (0)
+
 #define REPLY  0
 #define DIST 1
 #define ACK 1
@@ -25,8 +30,9 @@
 
 #define MAX_DIST 10000
 
-int linkCount = 0;
-int msgCount = 0;
+static int linkCount = 0;
+static int msgCount = 0;
+std::vector<std::vector<int>> adjacency;
 
 struct Message {
   unsigned int msg; // 0->nack 1->ack when type is 0; distance from the root when type is 1
@@ -52,6 +58,13 @@ struct Output {
 	int pipe;
 	int target;
 	std::vector<QueuedMsg> que;
+};
+
+struct TreeLink {
+	int node;
+	int dist;
+	int parent = -1;
+	std::vector<int> children;
 };
 
 // Create two pipes and two output queues between two nodes
@@ -109,8 +122,6 @@ void broadcast(int except, int sender, std::vector<Output>* output, struct Messa
 			queuedMsg.delay += it.que.end()->delay;
 		}
 		it.que.push_back(queuedMsg);
-		//write(it.pipe, &msg, sizeof(struct Message));
-		//printf("%d is going to %d\n", sender, it.target);
 	}
 }
 
@@ -181,105 +192,177 @@ void reply(int target, int node, std::vector<Output>* output, struct Message msg
 	}
 }
 
+void update_adjacency(TreeLink links){
+  int node = links.node;
+	for(auto &iter : links.children) {
+    adjacency[node].push_back(iter);
+  }
+  if(links.parent >= 0) {
+    adjacency[node].push_back(links.parent);
+  }
+}
+
+void print_adjacency(){
+  printf("Adjacency List:\n");
+  int pid = 0;
+	for(auto &iter : adjacency) {
+    printf("%d -> {", pid);
+    for(auto &childiter : iter) {
+      printf("%d, ", childiter);
+    }
+    printf("}\n");
+    pid++;
+  }
+}
+
+TreeLink init_tree(std::vector<struct Link>* neighbors, std::vector<struct Output>* output, int node) {
+  printf("Initiating BFS tree construction from process %d...\n", node);
+
+  // init vars and send outgoing messages 
+  struct TreeLink result;
+  result.node = node;
+	struct Message inputMsg; 
+	struct Message outputMsg;
+  outputMsg.msg = result.dist;
+  outputMsg.type = DIST; 
+  outputMsg.sender = node;
+  broadcast(-1, node, output, outputMsg); // broadcast the distance to all the neighbors
+
+  // wait for replies from neighbors
+  while(1) {
+    checkMsgQueue(node, output);
+    if(readMsg(neighbors, &inputMsg)) {
+
+      // receive ack
+      if(inputMsg.type == REPLY) {
+        for(auto &iter : *neighbors) {
+          if(iter.target == inputMsg.sender) {
+            iter.reply = 1;
+            debug_print("Root %d receive ack from %d\n", node, inputMsg.sender);
+            break;
+          }
+
+        }
+        if(inputMsg.type == REPLY && inputMsg.msg == ACK) {
+          debug_print("process %d ack from %d\n", node, inputMsg.sender);
+          result.children.push_back(inputMsg.sender);
+        }
+      }
+      else {
+          debug_print("Root received dist from %d\n", inputMsg.sender);
+      }
+    }
+    // if receive ack from all the neighbors, then it is time to terminate
+    if(checkReply(-1, neighbors)) {
+      printf("Initiator finished tree construction\n");
+      return result;
+    }
+  }
+}
+
+
+TreeLink explore_loop(std::vector<struct Link>* neighbors, std::vector<struct Output>* output, int node) {
+  printf("Initiating BFS tree helper from process %d...\n", node);
+  // init vars and send outgoing messages 
+  struct TreeLink result;
+  result.node = node;
+  result.dist = MAX_DIST;
+	struct Message inputMsg; 
+	struct Message outputMsg;
+  outputMsg.msg = result.dist;
+  outputMsg.type = DIST; 
+  outputMsg.sender = node;
+  //broadcast(-1, node, output, outputMsg); // broadcast the distance to all the neighbors
+  bool done = false;
+
+  while(1) {
+    if(readMsg(neighbors, &inputMsg)) {
+      if(inputMsg.type == DIST) {
+        debug_print("Node %d got DIST from node %d\n", node, inputMsg.sender);
+        // parent change
+        if(result.dist > inputMsg.msg + 1) {
+          //if(node == 7 || node == 3 || node == 2)printf("process %d receive %d from %d\n", node, inputMsg.msg, inputMsg.sender);
+          result.dist = inputMsg.msg + 1; // reset the distance
+          outputMsg.msg = NACK;
+          outputMsg.sender = node;
+          outputMsg.type = REPLY;
+          reply(result.parent, node, output, outputMsg); // send nack to previous parent
+          result.parent = inputMsg.sender;
+          outputMsg.msg = result.dist;
+          outputMsg.sender = node;
+          outputMsg.type = DIST;
+          // reset the reply for the new broadcast
+          for(auto &iter : *neighbors) {
+            iter.reply = 0;
+          }
+          broadcast(result.parent, node, output, outputMsg); // broadcast the new distance
+        }
+        // invalid message
+        else if(inputMsg.sender != result.parent){
+          //if(node == 7 || node == 3 || node == 2)printf("process %d reject %d from %d\n", node, inputMsg.msg, inputMsg.sender);
+          struct Message outputMsg;
+          outputMsg.msg = NACK;
+          outputMsg.sender = node;
+          outputMsg.type = REPLY;
+          reply(inputMsg.sender, node, output, outputMsg); // send a nack
+          debug_print("process %d nack to %d\n", node, inputMsg.sender);
+        }
+      }
+      // receive an ack/nack
+      else if(inputMsg.type == REPLY) {
+        for(auto &iter : *neighbors) {
+          if(iter.target == inputMsg.sender) {
+            iter.reply = 1; // record the reply
+            //if(node == 7 || node == 3 || node == 2)printf("process %d receive ack/nack from %d\n", node, inputMsg.sender);
+            break;
+          }
+        }
+
+        if(inputMsg.msg == ACK) {
+          debug_print("process %d ack from %d\n", node, inputMsg.sender);
+          result.children.push_back(inputMsg.sender);
+        }
+        else {
+          debug_print("process %d nack from %d\n", node, inputMsg.sender);
+        }
+      }
+    }
+
+    // if get ack/nack for all the messages
+    if(!done && checkReply(result.parent, neighbors)) {
+      outputMsg.msg = ACK;
+      outputMsg.sender = node;
+      outputMsg.type = REPLY;
+      reply(result.parent, node, output, outputMsg);
+      //printf("process %d ack to %d\n", node, result.parent);
+      debug_print("%d - %d\n", node, result.parent);
+      printf("Node %d distance: %d\n", node, result.dist);
+      done = true;
+      update_adjacency(result);
+
+      while(!checkMsgQueue(node, output)){
+        continue;
+      }
+      //return result;
+    }
+    checkMsgQueue(node, output);
+  }
+}
+
 /***********************************************
  * Process code
  * Thread entry point, called on thread creation 
  ***********************************************/
 void thread_method(std::vector<struct Link>* neighbors, std::vector<struct Output>* output, bool isRoot, int node) {
-	unsigned int dist;
-	int parent = -1;
-	bool running = true;
-	bool sending = true;
-	struct Message inputMsg; 
-	struct Message outputMsg;
+  struct TreeLink result;
 	
-	// root node
 	if(isRoot) {
-		printf("Root: process %d start\n", node);
-		dist = 0;
-		outputMsg.msg = dist;
-		outputMsg.type = DIST; 
-		outputMsg.sender = node;
-		broadcast(-1, node, output, outputMsg); // broadcast the distance to all the neighbors
-		while(running) {
-			sending = checkMsgQueue(node, output);
-			if(readMsg(neighbors, &inputMsg)) {
-				// receive ack
-				if(inputMsg.type == REPLY) {
-					for(auto &iter : *neighbors) {
-						if(iter.target == inputMsg.sender) {
-							iter.reply = 1;
-							//printf("Root %d receive ack from %d\n", node, inputMsg.sender);
-							break;
-						}
-					}
-				}
-			}
-			// if receive ack from all the neighbors, then it is time to terminate
-			if(checkReply(-1, neighbors)) {
-				running = false;
-				printf("Program terminated, the number of average messages is %f\n", msgCount * 1.0 / linkCount);
-			}
-		}
+    result = init_tree(neighbors, output, node);
+    update_adjacency(result);
 	} 
-	// non-root node
 	else {
-		dist = MAX_DIST;
-		while(1) {
-			if(readMsg(neighbors, &inputMsg)) {
-				if(inputMsg.type == DIST) {
-					// parent change
-					if(dist > inputMsg.msg + 1) {
-						//if(node == 7 || node == 3 || node == 2)printf("process %d receive %d from %d\n", node, inputMsg.msg, inputMsg.sender);
-						dist = inputMsg.msg + 1; // reset the distance
-						outputMsg.msg = NACK;
-						outputMsg.sender = node;
-						outputMsg.type = REPLY;
-						reply(parent, node, output, outputMsg); // send nack to previous parent
-						parent = inputMsg.sender;
-						outputMsg.msg = dist;
-						outputMsg.sender = node;
-						outputMsg.type = DIST;
-						broadcast(parent, node, output, outputMsg); // broadcast the new distance
-						// reset the reply for the new broadcast
-						for(auto &iter : *neighbors) {
-							iter.reply = 0;
-						}
-					}
-					// invalid message
-					else {
-						//if(node == 7 || node == 3 || node == 2)printf("process %d reject %d from %d\n", node, inputMsg.msg, inputMsg.sender);
-						struct Message outputMsg;
-						outputMsg.msg = NACK;
-						outputMsg.sender = node;
-						outputMsg.type = REPLY;
-						reply(inputMsg.sender, node, output, outputMsg); // send a nack
-						//printf("process %d nack to %d\n", node, inputMsg.sender);
-					}
-				}
-				// receive an ack/nack
-				else if(inputMsg.type == REPLY) {
-					for(auto &iter : *neighbors) {
-						if(iter.target == inputMsg.sender) {
-							iter.reply = 1; // record the reply
-							//if(node == 7 || node == 3 || node == 2)printf("process %d receive ack/nack from %d\n", node, inputMsg.sender);
-							break;
-						}
-					}
-				}
-			}
-			// if get ack/nack for all the messages
-			if(checkReply(parent, neighbors) && running) {
-				outputMsg.msg = ACK;
-				outputMsg.sender = node;
-				outputMsg.type = REPLY;
-				reply(parent, node, output, outputMsg);
-				printf("%d - %d\n", node, parent);
-				running = false;
-			}
-			sending = checkMsgQueue(node, output);
-		}
-	}
+    result = explore_loop(neighbors, output, node);
+  }
 }
 
 int main(int argc, char** argv)
@@ -295,12 +378,7 @@ int main(int argc, char** argv)
 	input = get_meta(filepath);
 	int n = input.num;
 	int root = input.root;
-	/*for(int i = 0; i < n; i++) {
-		for(int j = 0; j < n; j++) {
-			std::cout << input.matrix[i][j];
-		}
-		std::cout << std::endl;
-	}*/
+  adjacency = std::vector<std::vector<int>>(n, std::vector<int>());
 	
 	//create vectors of links to neighbors
 	std::vector<struct Link>* links[n];
@@ -331,7 +409,6 @@ int main(int argc, char** argv)
 		return e;
 	}
 	
-	
 	std::thread* threads[n]; //pointers to every thread process
 	// Create threads, pass in vector of neighbor links
 	for(int i = 0; i < n; i++){
@@ -339,9 +416,11 @@ int main(int argc, char** argv)
 	}
 	
 	// Collect all threads as they terminate
-	for(int i = 0; i < n; i++){
-		threads[i]->join();	
-	}
+  threads[root]->join();	
 
+  printf("\n");
+  print_adjacency();
+  printf("Total message count: %d\n", msgCount);
+  printf("Average messages per link: %f\n", msgCount * 1.0 / linkCount);
 	return 0; // program finished
 }
