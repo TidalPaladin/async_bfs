@@ -1,0 +1,9 @@
+Total messages: 31
+Average messages: 3.100000
+5 - 4
+4 - 3
+4 - 6
+6 - 1
+1 - 0
+3 - 2
+3 - 7
