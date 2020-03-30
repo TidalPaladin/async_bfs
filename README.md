@@ -1,17 +1,17 @@
-CS6380 Distributed Computing
-Project 1 - AsynchBFS simulation
+#CS6380 Distributed Computing
+##Project 1 - AsynchBFS simulation
 
-Group members:
+##Group members:
 Scott Waggener
 Jonathan White
 Zixuan Yang
 
-Build information:
-Compile with
+##Build information:
+###Compile with
 	g++ -std=c++11 -pthread -o BFS main.cpp
 or call 'make' with the provided Makefile
 
-Execution information:
+##Execution information:
 Pass the input filepath as a command line argument to the program. Output is printed to the console.
 	./BFS <input_file.txt>
 
