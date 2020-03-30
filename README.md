@@ -1,8 +1,8 @@
-CS6380 Distributed Computing
+#CS6380 Distributed Computing
 
-Project 1 - AsynchBFS simulation
+##Project 1 - AsynchBFS simulation
 
-Group members:
+##Group members:
 
 Scott Waggener
 
@@ -10,7 +10,7 @@ Jonathan White
 
 Zixuan Yang
 
-Build information:
+##Build information:
 
 Compile with
 
@@ -18,7 +18,7 @@ Compile with
 	
 or call 'make' with the provided Makefile
 
-Execution information:
+##Execution information:
 
 Pass the input filepath as a command line argument to the program. Output is printed to the console.
 
