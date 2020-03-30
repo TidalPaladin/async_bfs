@@ -151,10 +151,10 @@ bool checkMsgQueue(int node, std::vector<Output>* output) {
 				iter->delay--;
 				if(iter->delay == 0) {
 					write(it.pipe, &iter->msg, sizeof(struct Message));
+					test_print("node %d send %d to %d, type: %d\n", node, iter->msg.msg, it.target, iter->msg.type);
 					it.que.erase(iter);
 					iter--;
 					msgCount++;
-					test_print("node %d send %d to %d, type: %d\n", node, iter->msg.msg, it.target, iter->msg.type);
 				}
 			}
 		}
@@ -223,6 +223,7 @@ void thread_method(std::vector<struct Link>* neighbors, std::vector<struct Outpu
 	bool sending = true;
 	struct Message inputMsg; 
 	struct Message outputMsg;
+	int acks_received = 0;
 	
 	// root node
 	if(isRoot) {
@@ -235,6 +236,7 @@ void thread_method(std::vector<struct Link>* neighbors, std::vector<struct Outpu
 			if(readMsg(neighbors, &inputMsg)) {
 				// receive ack
 				if(inputMsg.type == REPLY) {
+					acks_received++;
 					for(auto &iter : *output) {
 						if(iter.target == inputMsg.sender) {
 							iter.reply = inputMsg.msg;
@@ -242,9 +244,16 @@ void thread_method(std::vector<struct Link>* neighbors, std::vector<struct Outpu
 						}
 					}
 				}
+				else if(inputMsg.type == DIST){ // receive distance message, always send nack
+					struct Message outputMsg;
+					outputMsg.msg = NACK;
+					outputMsg.sender = node;
+					outputMsg.type = REPLY;
+					reply(inputMsg.sender, node, output, outputMsg); // send a reply
+				}
 			}
 			// if receive ack from all the neighbors, then it is time to terminate
-			if(checkReply(-1, output) && running) {
+			if(acks_received == neighbors->size() && running) {
 				running = false;
 				printf("Total messages: %d\n", msgCount);
 				printf("Average messages: %f\n", msgCount * 1.0 / linkCount);
@@ -270,7 +279,10 @@ void thread_method(std::vector<struct Link>* neighbors, std::vector<struct Outpu
 						outputMsg.msg = NACK;
 						outputMsg.sender = node;
 						outputMsg.type = REPLY;
-						if(parent != -1)reply(parent, node, output, outputMsg); // send nack to previous parent
+						if(parent != -1){
+							reply(parent, node, output, outputMsg); // send nack to previous parent
+							acks_received -= neighbors->size() - 1;// need as many acks as neighbors minus the parent
+						}
 						parent = inputMsg.sender;
 						outputMsg.msg = dist;
 						outputMsg.sender = node;
@@ -293,6 +305,8 @@ void thread_method(std::vector<struct Link>* neighbors, std::vector<struct Outpu
 				}
 				// receive an ack/nack
 				else if(inputMsg.type == REPLY) {
+					acks_received++;
+					test_print("Node %d has %d of %d acks\n", node, acks_received, neighbors->size()-1);
 					for(auto &iter : *output) {
 						if(iter.target == inputMsg.sender) {
 							iter.reply = inputMsg.msg; // record the reply
@@ -310,7 +324,7 @@ void thread_method(std::vector<struct Link>* neighbors, std::vector<struct Outpu
 				}
 			}
 			// if get ack/nack for all the messages
-			if(checkReply(parent, output) && !done) {
+			if(acks_received == neighbors->size()-1 && !done) {
 				outputMsg.msg = ACK;
 				outputMsg.sender = node;
 				outputMsg.type = REPLY;
